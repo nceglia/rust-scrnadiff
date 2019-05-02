@@ -49,10 +49,15 @@ fn main() -> Result<(), Error>  {
     println!("Finished Reading R1.\n");
 
     println!("Hashing Barcode Set...");
-    let barcode_set = read_barcodes("test/737K-august-2016.txt");
+    let barcode_set = read_barcodes("test/3M-february-2018.txt");
     println!("Finished Hashing Barcode Set.\n");
 
-    for result in reads.records() {
+
+    let mut valid_barcodes = HashSet::new();
+    let mut total_read = 0;
+    let mut barcode_to_read = HashMap::new();
+    for result in &reads.records() {
+        total_reads = total_reads + 1;
         let record = result?;
         let sequence = DnaString::from_acgt_bytes_hashn(record.seq(), record.id().as_bytes());
         let barcode = sequence.slice(0, 16);
@@ -60,7 +65,9 @@ fn main() -> Result<(), Error>  {
         let umi = sequence.slice(16, 26);
         let umi_str = umi.to_string();
         if barcode_set.contains(&barcode_str) {
-            println!("{:?} - 0", barcode);
+            valid_barcodes.insert(barcode_str);
+            println!("{:?} - Valid Barcodes", valid_barcodes.len());
+            barcode_to_read.insert(record.id(),barcode_str);
         } else {
             for known_barcode in barcode_set.iter() {
                 let mut mismatch = 0;
@@ -70,12 +77,16 @@ fn main() -> Result<(), Error>  {
                     }
                 }
                 if mismatch == 1 {
-                    println!("{:?} - {:?}", barcode, mismatch);
+                    valid_barcodes.insert(known_barcode.to_string());
+                    barcode_to_read.insert(record.id(),known_barcode.to_string());
+                    println!("{:?} - Valid Barcodes", valid_barcodes.len());
                     break;
                 }
             }
         }
     }
+    println!("{:?} - Valid Barcodes", valid_barcodes.len());
+    println!("{:?} - Total Reads", total_reads);
 
     let (seqs, tx_names, tx_gene_map) = utils::read_transcripts(reference)?;
     let index = build_index::<config::KmerType>(&seqs, &tx_names, &tx_gene_map)?;
