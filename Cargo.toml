@@ -1,0 +1,18 @@
+[package]
+name = "scdiff"
+version = "0.1.0"
+authors = ["Nick <nickceglia@gmail.com>"]
+edition = "2018"
+
+[dependencies]
+bio = "0.22"
+failure = "0.1"
+hamming = "0.1"
+
+[dependencies.debruijn]
+git = "https://github.com/10XGenomics/rust-debruijn"
+branch = "master"
+
+[dependencies.debruijn_mapping]
+git = "https://github.com/nceglia/rust-pseudoaligner"
+branch = "master"
