@@ -2,9 +2,9 @@ extern crate bio;
 extern crate debruijn;
 extern crate debruijn_mapping;
 extern crate failure;
-extern crate hamming;
+extern crate rayon;
 
-use debruijn::dna_string::DnaString;
+use debruijn::dna_string::{DnaString,DnaStringSlice};
 use std::env;
 use failure::Error;
 use bio::io::{fasta, fastq};
@@ -19,7 +19,11 @@ use std::{
    path::Path,
 };
 
+use rayon::prelude::*;
 use std::collections::HashSet;
+use std::collections::HashMap;
+use std::iter::FromIterator;
+
 
 fn read_barcodes(filename: impl AsRef<Path>) -> HashSet<String> {
    let file = File::open(filename).expect("no such file");
@@ -30,6 +34,23 @@ fn read_barcodes(filename: impl AsRef<Path>) -> HashSet<String> {
        barcode_set.insert(barcode);
    }
    barcode_set
+}
+
+fn mismatches(sequence : &String, reference : &String) -> u32 {
+    let mut mismatch : u32 = 0;
+    for (known_nt, nt) in reference.chars().zip(sequence.chars()) {
+        if known_nt != nt {
+            mismatch = mismatch + 1;
+        }
+    }
+    mismatch
+}
+
+fn parse_barcode(record: &bio::io::fastq::Record) -> String {
+    let seqid = record.id().to_owned();
+    let sequence = DnaString::from_acgt_bytes_hashn(record.seq(), record.id().as_bytes());
+    let barcode = sequence.slice(0, 16);
+    barcode.to_string()
 }
 
 fn main() -> Result<(), Error>  {
@@ -46,57 +67,73 @@ fn main() -> Result<(), Error>  {
 
     println!("Reading R1 Fastq...");
     let reads = fastq::Reader::from_file(fastq)?;
+    let records = fastq::Reader::from_file(fastq)?;
     println!("Finished Reading R1.\n");
 
     println!("Hashing Barcode Set...");
     let barcode_set = read_barcodes("test/3M-february-2018.txt");
     println!("Finished Hashing Barcode Set.\n");
 
+    // let mut valid_barcodes = HashMap::new();
+    let mut read_records = Vec::new();
 
-    let mut valid_barcodes = HashSet::new();
-    let mut total_read = 0;
-    let mut barcode_to_read = HashMap::new();
-    for result in &reads.records() {
-        total_reads = total_reads + 1;
-        let record = result?;
-        let sequence = DnaString::from_acgt_bytes_hashn(record.seq(), record.id().as_bytes());
-        let barcode = sequence.slice(0, 16);
-        let barcode_str = barcode.to_string();
-        let umi = sequence.slice(16, 26);
-        let umi_str = umi.to_string();
-        if barcode_set.contains(&barcode_str) {
-            valid_barcodes.insert(barcode_str);
-            println!("{:?} - Valid Barcodes", valid_barcodes.len());
-            barcode_to_read.insert(record.id(),barcode_str);
-        } else {
-            for known_barcode in barcode_set.iter() {
-                let mut mismatch = 0;
-                for (known_nt, nt) in known_barcode.chars().zip(barcode_str.chars()) {
-                    if known_nt != nt {
-                        mismatch = mismatch + 1;
-                    }
-                }
-                if mismatch == 1 {
-                    valid_barcodes.insert(known_barcode.to_string());
-                    barcode_to_read.insert(record.id(),known_barcode.to_string());
-                    println!("{:?} - Valid Barcodes", valid_barcodes.len());
-                    break;
-                }
-            }
-        }
+    for record_ref in records.records() {
+        let record = record_ref?;
+        read_records.push(record.to_owned());
     }
-    println!("{:?} - Valid Barcodes", valid_barcodes.len());
-    println!("{:?} - Total Reads", total_reads);
+    println!("\nParsing Sequence Barcodes..");
+    let barcodes = read_records.par_iter().map(|x| parse_barcode(x));
+    println!("Finished.");
 
-    let (seqs, tx_names, tx_gene_map) = utils::read_transcripts(reference)?;
-    let index = build_index::<config::KmerType>(&seqs, &tx_names, &tx_gene_map)?;
+    println!("\nFinding Valid Barcode Set...");
+    let mut valid_barcodes : Vec<String> = barcodes.clone().filter(|x| barcode_set.contains(x)).collect();
+    valid_barcodes.par_sort_unstable();
+    valid_barcodes.dedup();
+    println!("Perfectly Matched Barcodes: {:?}", valid_barcodes.len());
 
-    let mapped = process_reads::<config::KmerType, _>(reads, &index, output)?;
-    for read_data in mapped.iter() {
-        if read_data.3 != 0 {
-            println!("Read: {:?}", read_data);
-        }
-    }
+    println!("\nFinding Invalid Barcode Set...");
+    let mut invalid_barcodes : Vec<String> = barcodes.clone().filter(|x| !barcode_set.contains(x)).collect();
+    invalid_barcodes.par_sort_unstable();
+    invalid_barcodes.dedup();
+    println!("Invalid Barcodes: {:?}", invalid_barcodes.len());
+
+    let barcode_to_mismatches = invalid_barcodes.par_iter().map(|x| barcode_set.par_iter().map(move |y| mismatches(x,y))).collect();
+
+    // for record_ref in records.records() {
+    //     let record = record_ref?;
+    //     let seqid = record.id().to_owned();
+    //     let sequence = DnaString::from_acgt_bytes_hashn(record.seq(), record.id().as_bytes());
+    //     let barcode = sequence.slice(0, 16);
+    //     let barcode_str = barcode.to_string();
+    //     if barcode_set.contains(&barcode_str) {
+    //         valid_barcodes.insert(seqid,barcode_str);
+    //     } else {
+    //         let one_dist_corrected = barcode_set.par_iter().map(|x| mismatches(barcode_str.clone(), x.to_string())).filter(|&x| x == 1).collect()?;
+            // for bcs in one_dist_corrected {
+            //     println!("{:?} Records with 1 mismatch.", bcs);
+            // }
+
+            // for known_barcode in  {
+            //     let mut mismatch = mismatches(barcode_str, known_barcode)
+            // if mismatch == 1 {
+            //
+            //     break;
+            // }
+            // }
+    //     }
+    // }
+    // println!("\n{:?} - Valid Barcodes", valid_barcodes.keys().len());
+
+
+    // let (seqs, tx_names, tx_gene_map) = utils::read_transcripts(reference)?;
+    // let index = build_index::<config::KmerType>(&seqs, &tx_names, &tx_gene_map)?;
+    //
+    // let mapped = process_reads::<config::KmerType, _>(reads, &index, output)?;
+    // for read_data in mapped.iter() {
+    //     if read_data.3 != 0 {
+    //         println!("Read: {:?}", read_data);
+    //     }
+    // }
 
     Ok(())
 }
